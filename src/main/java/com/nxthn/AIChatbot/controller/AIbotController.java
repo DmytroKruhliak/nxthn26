@@ -77,10 +77,34 @@ public class AIbotController {
 
         // Обновляем память на основе атак, которые произошли ТОЛЬКО ЧТО (в этот ход)
         syncMemory(request.turn, request.enemyTowers, request.previousAttacks, request.diplomacy);
-
-        List<GameAction> actions = new ArrayList<>();
         Tower me = request.playerTower;
+        List<GameAction> actions = new ArrayList<>();
         int budget = me.resources;
+
+        // Фильтруем живых врагов
+        List<Tower> aliveEnemies = request.enemyTowers.stream()
+                .filter(e -> e.hp > 0)
+                .collect(Collectors.toList());
+
+        // ПРОВЕРКА: Режим 1 на 1
+        if (aliveEnemies.size() == 1) {
+            Tower target = aliveEnemies.get(0);
+
+            // 1. Расчет брони (70% бюджета)
+            int armorAmount = (int) (budget * 0.7);
+            if (armorAmount >= 1) { // Минимальный порог брони
+                actions.add(GameAction.armor(armorAmount));
+            }
+
+            // 2. Расчет атаки (30% бюджета)
+            // Оставшийся бюджет или ровно 30%
+            int attackAmount = (int) (budget * 0.3);
+            if (attackAmount >= 1) {
+                actions.add(GameAction.attack(target.playerId, attackAmount));
+            }
+
+            return actions;
+        }
 
         // 1. Прогноз входящего урона
         int incoming = StrategyUtils.predictDamage(me, request.enemyTowers, playerMemories, request.diplomacy, request.turn);
