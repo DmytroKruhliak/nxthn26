@@ -24,12 +24,8 @@ public class AIbotController {
     }
 
     @GetMapping("/info")
-    public Map<String, String> info() {
-        return Map.of(
-                "name", "KingdomMaster_v1",
-                "strategy", "AI-trapped-strategy",
-                "version", "1.1"
-        );
+    public Map<Integer, PlayerMemory> info() {
+        return playerMemories;
     }
 
     @PostMapping("/negotiate")
