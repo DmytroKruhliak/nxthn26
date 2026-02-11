@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @RestController
@@ -76,6 +77,7 @@ public class AIbotController {
         Tower me = request.playerTower;
         List<GameAction> actions = new ArrayList<>();
         int budget = me.resources;
+        AtomicInteger budgetCounter = new AtomicInteger(budget);
 
         // Фильтруем живых врагов
         List<Tower> aliveEnemies = request.enemyTowers.stream()
@@ -118,12 +120,12 @@ public class AIbotController {
             // 2. Поиск цели для убийства (Kill-Shot)
             // Ищем врага, чей (HP + Armor) меньше нашего текущего бюджета
             Tower victim = aliveEnemies.stream()
-                    .filter(e -> (e.hp + e.armor) < budget)
+                    .filter(e -> (e.hp + e.armor + 2) < budgetCounter.get())
                     .min(Comparator.comparingInt(e -> e.hp + e.armor))
                     .orElse(null);
 
             if (victim != null) {
-                int killShotAmount = victim.hp + victim.armor + 2; // +2 для верности
+                int killShotAmount = victim.hp + victim.armor + 2;
                 int remainingForDefense = budget - killShotAmount;
 
                 actions.add(GameAction.attack(victim.playerId, killShotAmount));
