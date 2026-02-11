@@ -27,70 +27,94 @@ public class AIbotController {
     public List<NegotiationResponse> negotiate(@RequestBody NegotiationRequest request) {
         System.out.println("[KW-BOT] Mega ogudor");
 
-        // 1. Кто нас обидел? (Шаг 1)
+        // Вызываем наши анализаторы
         ThreatAnalyzer threatAnalyzer = new ThreatAnalyzer();
         Map<Integer, ThreatAnalyzer.ThreatScore> threats = threatAnalyzer.analyzeThreats(request);
 
-        // 2. Кто станет монстром? (Шаг 2)
         EconomicAnalyzer ecoAnalyzer = new EconomicAnalyzer();
         List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard = ecoAnalyzer.analyze(request.enemyTowers);
 
-        // 3. Выбор ГЛАВНОЙ ЦЕЛИ (Target)
-        // Приоритет: Если есть наглый агрессор - бьем его. Если нет - бьем самого богатого.
+        // 1. ОПРЕДЕЛЯЕМ ЖЕРТВУ (Кого боимся или ненавидим)
         Integer targetId = null;
-
         Integer mainAggressorId = threats.values().stream()
-                .filter(t -> t.isAggressor && t.totalDamageReceived > 10) // Игнорируем мелкие тычки
+                .filter(t -> t.isAggressor && t.totalDamageReceived > 10)
                 .max(Comparator.comparingInt(t -> t.totalDamageReceived))
                 .map(t -> t.playerId).orElse(null);
 
         if (mainAggressorId != null) {
             targetId = mainAggressorId;
         } else if (!ecoLeaderboard.isEmpty()) {
-            targetId = ecoLeaderboard.get(0).playerId; // Бьем самого богатого
+            targetId = ecoLeaderboard.get(0).playerId;
         }
 
-        // 4. Выбор СОЮЗНИКА (Ally)
-        // Дружим с тем, кто НЕ агрессор и НЕ самый богатый (чтобы не помогать лидеру)
+        if (targetId == null) return Collections.emptyList();
+
+        // 2. ВЫБИРАЕМ СОЮЗНИКА (Кому доверяем)
         final Integer finalTargetId = targetId;
         Integer allyId = request.enemyTowers.stream()
-                .filter(e -> e.playerId != finalTargetId)
-                .filter(e -> !threats.get(e.playerId).isAggressor)
-                .min(Comparator.comparingInt(e -> e.level)) // Выбираем самого слабого в помощники
+                .filter(e -> e.playerId != finalTargetId) // Не союзничаем с жертвой
+                .filter(e -> !threats.get(e.playerId).isAggressor) // Не союзничаем с обидчиком
+                .findFirst()
                 .map(e -> e.playerId).orElse(null);
 
-        if (allyId != null && targetId != null) {
-            return List.of(new NegotiationResponse(allyId, targetId));
+        // Если все враги агрессивны, ищем самого слабого из них (кроме цели), чтобы "расколоть" их коалицию
+        if (allyId == null) {
+            allyId = request.enemyTowers.stream()
+                    .filter(e -> e.playerId != finalTargetId)
+                    .min(Comparator.comparingInt(e -> e.hp))
+                    .map(e -> e.playerId).orElse(null);
+        }
+
+        // 3. УПАКОВКА JSON
+        if (allyId != null) {
+            // Мы отправляем ОДНО сообщение ОДНОМУ союзнику
+            return List.of(new NegotiationResponse(allyId, finalTargetId));
         }
 
         return Collections.emptyList();
     }
-
     // 4. Combat Phase
     @PostMapping("/combat")
     public List<GameAction> combat(@RequestBody CombatRequest request) {
         System.out.println("[KW-BOT] Mega ogudor");
 
-        List<GameAction> actions = new ArrayList<>();
-        int resources = request.playerTower.resources;
+        // Используем уже созданные нами анализаторы
+        ThreatAnalyzer threatAnalyzer = new ThreatAnalyzer();
+        // (Для боя нам нужно передать данные о врагах и прошлых атаках)
+        Map<Integer, ThreatAnalyzer.ThreatScore> threats = threatAnalyzer.analyzeThreatsForCombat(request);
 
+        EconomicAnalyzer ecoAnalyzer = new EconomicAnalyzer();
+        List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard = ecoAnalyzer.analyze(request.enemyTowers);
+
+        // ВЫБОР ЖЕРТВЫ (Шаг 3)
+        Integer targetId = TargetSelector.selectBestTarget(request, threats, ecoLeaderboard);
+
+        // РАСПРЕДЕЛЕНИЕ РЕСУРСОВ
+        List<GameAction> actions = new ArrayList<>();
+        int budget = request.playerTower.resources;
+
+        // 1. Сначала проверяем UPGRADE (Инвестиция в будущее)
         int currentLevel = request.playerTower.level;
         int upgradeCost = (int) (50 * Math.pow(1.75, currentLevel - 1));
 
-        if (resources >= upgradeCost && currentLevel < 5) {
+        // Стратегия: апгрейдимся, если HP позволяет (не при смерти)
+        if (budget >= upgradeCost && request.playerTower.hp > 30) {
             actions.add(GameAction.upgrade());
-            resources -= upgradeCost;
+            budget -= upgradeCost;
         }
 
-        if (resources > 0 && request.playerTower.armor < 10) {
-            int armorToBuy = Math.min(resources, 10 - request.playerTower.armor);
-            actions.add(GameAction.armor(armorToBuy));
-            resources -= armorToBuy;
+        // 2. Покупаем ARMOR (Минимальная защита)
+        // Если нас били на прошлом ходу или скоро Fatigue (25 ход), укрепляемся
+        int armorNeeds = (request.turn > 20) ? 20 : 10;
+        if (budget > 0 && request.playerTower.armor < armorNeeds) {
+            int toBuy = Math.min(budget, armorNeeds - request.playerTower.armor);
+            actions.add(GameAction.armor(toBuy));
+            budget -= toBuy;
         }
 
-        if (resources > 0 && !request.enemyTowers.isEmpty()) {
-            int targetId = request.enemyTowers.get(0).playerId;
-            actions.add(GameAction.attack(targetId, resources));
+        // 3. Остаток - ATTACK (Реализация Шага 3)
+        if (budget > 0 && targetId != null) {
+            actions.add(GameAction.attack(targetId, budget));
         }
 
         return actions;
