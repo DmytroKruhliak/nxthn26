@@ -6,35 +6,29 @@ import java.util.Map;
 
 class TargetSelector {
     public static Integer selectBestTarget(CombatRequest request,
-                                           Map<Integer, ThreatAnalyzer.ThreatScore> threats,
-                                           List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard) {
+            Map<Integer, ThreatAnalyzer.ThreatScore> threats,
+            List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard) {
 
-        if (request.enemyTowers == null || request.enemyTowers.isEmpty()) return null;
-
-        // ВАЖНО: Определяем, кому мы ПРЕДЛОЖИЛИ мир (повторяем логику из negotiate)
-        // Чтобы случайно не ударить союзника
-        List<Integer> potentialAllies = request.enemyTowers.stream()
-                .filter(e -> !threats.get(e.playerId).isAggressor)
-                .map(e -> e.playerId)
+        // Оставляем только живых врагов
+        List<Tower> aliveEnemies = request.enemyTowers.stream()
+                .filter(e -> e.hp > 0)
                 .toList();
 
-        // 1. Месть (самый приоритетный таргет)
+        if (aliveEnemies.isEmpty()) return null;
+
+        // 1. ОТВЕТКА (МЕСТЬ): Бьем того, кто нанес урон нам, если он еще жив
         Integer revengeId = threats.values().stream()
-                .filter(t -> t.isAggressor)
+                .filter(t -> t.isAggressor && t.totalDamageReceived > 0)
                 .max(Comparator.comparingInt(t -> t.totalDamageReceived))
                 .map(t -> t.playerId)
+                .filter(id -> aliveEnemies.stream().anyMatch(e -> e.playerId == id))
                 .orElse(null);
 
         if (revengeId != null) return revengeId;
 
-        // 2. Лидер по ресурсам (но НЕ наш союзник)
-        for (EconomicAnalyzer.EnemyEconomy eco : ecoLeaderboard) {
-            if (!potentialAllies.contains(eco.playerId)) {
-                return eco.playerId;
-            }
-        }
-
-        // 3. Если остались только союзники или нет выбора - бьем самого сильного врага
-        return request.enemyTowers.get(0).playerId;
+        // 2. ДИПЛОМАТИЯ: Если нас не бьют, мы никого не трогаем (возвращаем null)
+        // Но если ты хочешь, чтобы он всё же кого-то бил (например, лидера),
+        // убери проверку на агрессора ниже.
+        return null;
     }
 }

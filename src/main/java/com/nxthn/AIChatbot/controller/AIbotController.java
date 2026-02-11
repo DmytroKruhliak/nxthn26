@@ -27,47 +27,50 @@ public class AIbotController {
     public List<NegotiationResponse> negotiate(@RequestBody NegotiationRequest request) {
         System.out.println("[KW-BOT] Mega ogudor");
 
-        // Вызываем наши анализаторы
         ThreatAnalyzer threatAnalyzer = new ThreatAnalyzer();
         Map<Integer, ThreatAnalyzer.ThreatScore> threats = threatAnalyzer.analyzeThreats(request);
 
-        EconomicAnalyzer ecoAnalyzer = new EconomicAnalyzer();
-        List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard = ecoAnalyzer.analyze(request.enemyTowers);
-
-        // 1. ОПРЕДЕЛЯЕМ ЖЕРТВУ (Кого боимся или ненавидим)
-        Integer targetId = null;
-        Integer mainAggressorId = threats.values().stream()
-                .filter(t -> t.isAggressor && t.totalDamageReceived > 10)
+        // 1. Ищем только тех, кто ЖИВ и КТО НАС АТАКОВАЛ (Месть)
+        Integer targetId = threats.values().stream()
+                .filter(t -> t.isAggressor && t.totalDamageReceived > 0)
                 .max(Comparator.comparingInt(t -> t.totalDamageReceived))
-                .map(t -> t.playerId).orElse(null);
+                .map(t -> t.playerId)
+                .filter(id -> request.enemyTowers.stream().anyMatch(e -> e.playerId == id && e.hp > 0))
+                .orElse(null);
 
-        if (mainAggressorId != null) {
-            targetId = mainAggressorId;
-        } else if (!ecoLeaderboard.isEmpty()) {
-            targetId = ecoLeaderboard.get(0).playerId;
+        // 2. Если нас никто не бьет — мы мирные, никого не подговариваем атаковать
+        if (targetId == null) {
+            // Опционально: можно предложить мир самому сильному, просто чтобы "задобрить"
+            Integer strongestId = request.enemyTowers.stream()
+                    .filter(e -> e.hp > 0)
+                    .max(Comparator.comparingInt(e -> e.level))
+                    .map(e -> e.playerId).orElse(null);
+
+            if (strongestId != null) {
+                return List.of(new NegotiationResponse(strongestId, null));
+            }
+            return Collections.emptyList();
         }
 
-        if (targetId == null) return Collections.emptyList();
-
-        // 2. ВЫБИРАЕМ СОЮЗНИКА (Кому доверяем)
+        // 3. Если есть агрессор, ищем союзника среди остальных живых
         final Integer finalTargetId = targetId;
         Integer allyId = request.enemyTowers.stream()
-                .filter(e -> e.playerId != finalTargetId) // Не союзничаем с жертвой
-                .filter(e -> !threats.get(e.playerId).isAggressor) // Не союзничаем с обидчиком
+                .filter(e -> e.hp > 0)
+                .filter(e -> e.playerId != finalTargetId)
+                .filter(e -> !threats.get(e.playerId).isAggressor)
                 .findFirst()
                 .map(e -> e.playerId).orElse(null);
 
-        // Если все враги агрессивны, ищем самого слабого из них (кроме цели), чтобы "расколоть" их коалицию
+        // Если все живые — агрессоры, выберем самого слабого в надежде на перемирие
         if (allyId == null) {
             allyId = request.enemyTowers.stream()
+                    .filter(e -> e.hp > 0)
                     .filter(e -> e.playerId != finalTargetId)
                     .min(Comparator.comparingInt(e -> e.hp))
                     .map(e -> e.playerId).orElse(null);
         }
 
-        // 3. УПАКОВКА JSON
         if (allyId != null) {
-            // Мы отправляем ОДНО сообщение ОДНОМУ союзнику
             return List.of(new NegotiationResponse(allyId, finalTargetId));
         }
 
@@ -78,42 +81,40 @@ public class AIbotController {
     public List<GameAction> combat(@RequestBody CombatRequest request) {
         System.out.println("[KW-BOT] Mega ogudor");
 
-        // Используем уже созданные нами анализаторы
         ThreatAnalyzer threatAnalyzer = new ThreatAnalyzer();
-        // (Для боя нам нужно передать данные о врагах и прошлых атаках)
         Map<Integer, ThreatAnalyzer.ThreatScore> threats = threatAnalyzer.analyzeThreatsForCombat(request);
 
         EconomicAnalyzer ecoAnalyzer = new EconomicAnalyzer();
         List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard = ecoAnalyzer.analyze(request.enemyTowers);
 
-        // ВЫБОР ЖЕРТВЫ (Шаг 3)
-        Integer targetId = TargetSelector.selectBestTarget(request, threats, ecoLeaderboard);
-
-        // РАСПРЕДЕЛЕНИЕ РЕСУРСОВ
         List<GameAction> actions = new ArrayList<>();
         int budget = request.playerTower.resources;
-
-        // 1. Сначала проверяем UPGRADE (Инвестиция в будущее)
         int currentLevel = request.playerTower.level;
+
+        // --- ШАГ 1: МАКСИМАЛЬНЫЙ UPGRADE ---
+        // Формула стоимости: 50 * (1.75 ^ (level - 1))
         int upgradeCost = (int) (50 * Math.pow(1.75, currentLevel - 1));
 
-        // Стратегия: апгрейдимся, если HP позволяет (не при смерти)
-        if (budget >= upgradeCost && request.playerTower.hp > 30) {
+        // Качаемся до упора (уровень 5-6), если хватает денег
+        if (currentLevel < 6 && budget >= upgradeCost) {
             actions.add(GameAction.upgrade());
             budget -= upgradeCost;
         }
 
-        // 2. Покупаем ARMOR (Минимальная защита)
-        // Если нас били на прошлом ходу или скоро Fatigue (25 ход), укрепляемся
-        int armorNeeds = (request.turn > 20) ? 20 : 10;
-        if (budget > 0 && request.playerTower.armor < armorNeeds) {
-            int toBuy = Math.min(budget, armorNeeds - request.playerTower.armor);
+        // --- ШАГ 2: ЗАЩИТА (ARMOR) ---
+        // Покупаем броню, если нас атакуют или если бюджет позволяет
+        int minArmor = (request.turn > 20) ? 30 : 10;
+        if (budget > 0 && request.playerTower.armor < minArmor) {
+            int toBuy = Math.min(budget, minArmor - request.playerTower.armor);
             actions.add(GameAction.armor(toBuy));
             budget -= toBuy;
         }
 
-        // 3. Остаток - ATTACK (Реализация Шага 3)
-        if (budget > 0 && targetId != null) {
+        // --- ШАГ 3: ОТВЕТНАЯ АТАКА (REVENGE) ---
+        Integer targetId = TargetSelector.selectBestTarget(request, threats, ecoLeaderboard);
+
+        // Бьем ТОЛЬКО если есть targetId (то есть была агрессия)
+        if (targetId != null && budget > 0) {
             actions.add(GameAction.attack(targetId, budget));
         }
 
