@@ -151,7 +151,7 @@ public class AIbotController {
         double avgPower = request.enemyTowers.stream().mapToDouble(StrategyUtils::calculatePower).average().orElse(0);
 
         boolean canUpgrade = false;
-        if (me.level < 5 && budget >= upgradeCost && (me.hp + me.armor >= incoming + 20)) {
+        if (me.level < 3 && budget >= upgradeCost && (me.hp + me.armor >= incoming + 20)) {
             if (request.turn <= 3 && me.level == 1) canUpgrade = true;
             else if (request.turn <= 9 && me.level < 3 && incoming < 30) canUpgrade = true;
             else if (request.turn <= 18 && me.level < 4 && budget >= upgradeCost * 1.3 && StrategyUtils.calculatePower(me) >= avgPower * 0.9) canUpgrade = true;
