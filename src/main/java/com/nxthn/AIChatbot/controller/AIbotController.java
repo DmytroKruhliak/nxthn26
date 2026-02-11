@@ -76,8 +76,7 @@ public class AIbotController {
         syncMemory(request.turn, request.enemyTowers, request.previousAttacks, request.diplomacy);
         Tower me = request.playerTower;
         List<GameAction> actions = new ArrayList<>();
-        int budget = me.resources;
-        AtomicInteger budgetCounter = new AtomicInteger(budget);
+        final int currentBudget = me.resources;
 
         // Фильтруем живых врагов
         List<Tower> aliveEnemies = request.enemyTowers.stream()
@@ -89,14 +88,14 @@ public class AIbotController {
             Tower target = aliveEnemies.get(0);
 
             // 1. Расчет брони (70% бюджета)
-            int armorAmount = (int) (budget * 0.7);
+            int armorAmount = (int) (currentBudget * 0.7);
             if (armorAmount >= 1) { // Минимальный порог брони
                 actions.add(GameAction.armor(armorAmount));
             }
 
             // 2. Расчет атаки (30% бюджета)
             // Оставшийся бюджет или ровно 30%
-            int attackAmount = budget - armorAmount - 1;
+            int attackAmount = currentBudget - armorAmount;
             if (attackAmount >= 1) {
                 actions.add(GameAction.attack(target.playerId, attackAmount));
             }
@@ -107,12 +106,14 @@ public class AIbotController {
         if (request.turn > 18 && aliveEnemies.size() > 1) {
 
             if (me.hp < 35 || me.armor < 15) {
-                int defenseBudget = (int) (budget * 0.8);
-                int attackBudget = budget - defenseBudget - 1;
+                int defenseBudget = (int) (currentBudget * 0.8);
+                int attackBudget = currentBudget - defenseBudget;
+
+                if (defenseBudget >= 1) actions.add(GameAction.armor(defenseBudget));
 
                 Tower weakest = aliveEnemies.stream()
                         .min(Comparator.comparingInt(e -> e.hp + e.armor)).get();
-                actions.add(GameAction.attack(weakest.playerId, attackBudget));
+                if(attackBudget >= 1) actions.add(GameAction.attack(weakest.playerId, attackBudget));
 
                 return actions;
             }
@@ -120,21 +121,27 @@ public class AIbotController {
             // 2. Поиск цели для убийства (Kill-Shot)
             // Ищем врага, чей (HP + Armor) меньше нашего текущего бюджета
             Tower victim = aliveEnemies.stream()
-                    .filter(e -> (e.hp + e.armor + 2) < budgetCounter.get())
+                    .filter(e -> (e.hp + e.armor + 2) <= currentBudget)
                     .min(Comparator.comparingInt(e -> e.hp + e.armor))
                     .orElse(null);
 
             if (victim != null) {
                 int killShotAmount = victim.hp + victim.armor + 2;
-                int remainingForDefense = budget - killShotAmount;
+                int remainingForDefense = currentBudget - killShotAmount;
 
                 actions.add(GameAction.attack(victim.playerId, killShotAmount));
-                if (remainingForDefense >= 10) {
+                if (remainingForDefense >= 1) {
                     actions.add(GameAction.armor(remainingForDefense));
                 }
                 return actions;
             }
         }
+
+        return processUsualCases(request, me, actions);
+    }
+
+    private List<GameAction> processUsualCases(CombatRequest request, Tower me, List<GameAction> actions) {
+        int budget = me.resources;
 
         // 1. Прогноз входящего урона
         int incoming = StrategyUtils.predictDamage(me, request.enemyTowers, playerMemories, request.diplomacy, request.turn);
@@ -157,14 +164,14 @@ public class AIbotController {
         }
 
         // 3. ARMOR Logic
-        if (incoming >= 15 && budget >= 10) {
+        if (incoming >= 15 && budget >= 1) {
             int armorToBuild;
             if (me.hp + me.armor < incoming) {
                 armorToBuild = Math.min(incoming - me.armor + 10, (int) (budget * 0.6));
             } else {
                 armorToBuild = Math.min((int) (incoming * 0.7) - me.armor, (int) (budget * 0.4));
             }
-            if (armorToBuild >= 10) {
+            if (armorToBuild >= 1) {
                 actions.add(GameAction.armor(armorToBuild));
                 budget -= armorToBuild;
             }
@@ -172,11 +179,11 @@ public class AIbotController {
 
         // 4. ATTACK Logic
         int attackBudget = budget - 15; // Резерв
-        if (attackBudget >= 10) {
+        if (attackBudget >= 1) {
             List<AttackCandidate> targets = calculateAttackCandidates(request.enemyTowers, me, request.turn);
             for (AttackCandidate target : targets) {
                 int troops = Math.min(target.wantedTroops, attackBudget);
-                if (troops >= 10) {
+                if (troops >= 1) {
                     actions.add(GameAction.attack(target.id, troops));
                     attackBudget -= troops;
                     getMem(target.id).myAttacksOnThem.add(troops);
