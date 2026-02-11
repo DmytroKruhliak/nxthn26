@@ -84,36 +84,54 @@ public class AIbotController {
         ThreatAnalyzer threatAnalyzer = new ThreatAnalyzer();
         Map<Integer, ThreatAnalyzer.ThreatScore> threats = threatAnalyzer.analyzeThreatsForCombat(request);
 
-        EconomicAnalyzer ecoAnalyzer = new EconomicAnalyzer();
-        List<EconomicAnalyzer.EnemyEconomy> ecoLeaderboard = ecoAnalyzer.analyze(request.enemyTowers);
-
         List<GameAction> actions = new ArrayList<>();
         int budget = request.playerTower.resources;
-        int currentLevel = request.playerTower.level;
+        int level = request.playerTower.level;
+        int myHp = request.playerTower.hp;
 
-        // --- ШАГ 1: МАКСИМАЛЬНЫЙ UPGRADE ---
-        // Формула стоимости: 50 * (1.75 ^ (level - 1))
-        int upgradeCost = (int) (50 * Math.pow(1.75, currentLevel - 1));
+        // --- ПАРАМЕТРЫ СОСТОЯНИЯ ---
+        boolean isCritical = myHp < 35; // Мы при смерти
+        boolean beingAttacked = threats.values().stream().anyMatch(t -> t.isAggressor);
 
-        // Качаемся до упора (уровень 5-6), если хватает денег
-        if (currentLevel < 6 && budget >= upgradeCost) {
+        // --- 1. ЗАЩИТА (Приоритет №1, если нас бьют или мало HP) ---
+        if (budget > 0 && (beingAttacked || isCritical)) {
+            // Если критично, пытаемся сделать броню побольше
+            int armorLimit = isCritical ? 40 : 15;
+            if (request.playerTower.armor < armorLimit) {
+                int toBuy = Math.min(budget, armorLimit - request.playerTower.armor);
+                actions.add(GameAction.armor(toBuy));
+                budget -= toBuy;
+            }
+        }
+
+        // --- 2. ЭКОНОМИКА (Приоритет №2, только если мы в безопасности) ---
+        int upgradeCost = (int) (50 * Math.pow(1.75, level - 1));
+        // НЕ качаемся, если HP критическое или если уже поздно (Fatigue)
+        if (!isCritical && level < 6 && budget >= upgradeCost && request.turn < 28) {
             actions.add(GameAction.upgrade());
             budget -= upgradeCost;
         }
 
-        // --- ШАГ 2: ЗАЩИТА (ARMOR) ---
-        // Покупаем броню, если нас атакуют или если бюджет позволяет
-        int minArmor = (request.turn > 20) ? 30 : 10;
-        if (budget > 0 && request.playerTower.armor < minArmor) {
-            int toBuy = Math.min(budget, minArmor - request.playerTower.armor);
-            actions.add(GameAction.armor(toBuy));
-            budget -= toBuy;
+        // --- 3. АТАКА (Приоритет №3 - Месть или Fatigue) ---
+        Integer targetId = null;
+
+        // Сначала ищем обидчика среди живых
+        targetId = threats.values().stream()
+                .filter(t -> t.isAggressor)
+                .max(Comparator.comparingInt(t -> t.totalDamageReceived))
+                .map(t -> t.playerId)
+                .filter(id -> isAlive(id, request.enemyTowers))
+                .orElse(null);
+
+        // Если обидчиков нет, но мы уже богатые или пора воевать (Fatigue)
+        if (targetId == null && (request.turn >= 25 || level >= 4)) {
+            targetId = request.enemyTowers.stream()
+                    .filter(e -> e.hp > 0)
+                    .min(Comparator.comparingInt(e -> e.hp + e.armor))
+                    .map(e -> e.playerId).orElse(null);
         }
 
-        // --- ШАГ 3: ОТВЕТНАЯ АТАКА (REVENGE) ---
-        Integer targetId = TargetSelector.selectBestTarget(request, threats, ecoLeaderboard);
-
-        // Бьем ТОЛЬКО если есть targetId (то есть была агрессия)
+        // Стреляем на все оставшиеся деньги
         if (targetId != null && budget > 0) {
             actions.add(GameAction.attack(targetId, budget));
         }
