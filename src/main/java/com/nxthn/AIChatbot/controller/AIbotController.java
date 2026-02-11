@@ -98,12 +98,44 @@ public class AIbotController {
 
             // 2. Расчет атаки (30% бюджета)
             // Оставшийся бюджет или ровно 30%
-            int attackAmount = (int) (budget * 0.3);
+            int attackAmount = budget - armorAmount - 1;
             if (attackAmount >= 1) {
                 actions.add(GameAction.attack(target.playerId, attackAmount));
             }
 
             return actions;
+        }
+
+        if (request.turn > 18 && aliveEnemies.size() > 1) {
+
+            if (me.hp < 35 || me.armor < 15) {
+                int defenseBudget = (int) (budget * 0.8);
+                int attackBudget = budget - defenseBudget - 1;
+
+                Tower weakest = aliveEnemies.stream()
+                        .min(Comparator.comparingInt(e -> e.hp + e.armor)).get();
+                actions.add(GameAction.attack(weakest.playerId, attackBudget));
+
+                return actions;
+            }
+
+            // 2. Поиск цели для убийства (Kill-Shot)
+            // Ищем врага, чей (HP + Armor) меньше нашего текущего бюджета
+            Tower victim = aliveEnemies.stream()
+                    .filter(e -> (e.hp + e.armor) < budget)
+                    .min(Comparator.comparingInt(e -> e.hp + e.armor))
+                    .orElse(null);
+
+            if (victim != null) {
+                int killShotAmount = victim.hp + victim.armor + 2; // +2 для верности
+                int remainingForDefense = budget - killShotAmount;
+
+                actions.add(GameAction.attack(victim.playerId, killShotAmount));
+                if (remainingForDefense >= 10) {
+                    actions.add(GameAction.armor(remainingForDefense));
+                }
+                return actions;
+            }
         }
 
         // 1. Прогноз входящего урона
