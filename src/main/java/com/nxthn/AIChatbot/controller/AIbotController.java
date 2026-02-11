@@ -89,14 +89,13 @@ public class AIbotController {
         int level = request.playerTower.level;
         int myHp = request.playerTower.hp;
 
-        // --- ПАРАМЕТРЫ СОСТОЯНИЯ ---
-        boolean isCritical = myHp < 35; // Мы при смерти
+        // Состояние: нас бьют или у нас критически мало HP
         boolean beingAttacked = threats.values().stream().anyMatch(t -> t.isAggressor);
+        boolean isCritical = myHp < 35;
 
-        // --- 1. ЗАЩИТА (Приоритет №1, если нас бьют или мало HP) ---
+        // 1. ЗАЩИТА (Если бьют — броня важнее всего)
         if (budget > 0 && (beingAttacked || isCritical)) {
-            // Если критично, пытаемся сделать броню побольше
-            int armorLimit = isCritical ? 40 : 15;
+            int armorLimit = isCritical ? 40 : 20;
             if (request.playerTower.armor < armorLimit) {
                 int toBuy = Math.min(budget, armorLimit - request.playerTower.armor);
                 actions.add(GameAction.armor(toBuy));
@@ -104,26 +103,22 @@ public class AIbotController {
             }
         }
 
-        // --- 2. ЭКОНОМИКА (Приоритет №2, только если мы в безопасности) ---
+        // 2. ЭКОНОМИКА (Качаемся, только если нас НЕ трогают)
         int upgradeCost = (int) (50 * Math.pow(1.75, level - 1));
-        // НЕ качаемся, если HP критическое или если уже поздно (Fatigue)
-        if (!isCritical && level < 6 && budget >= upgradeCost && request.turn < 28) {
+        if (!beingAttacked && !isCritical && level < 6 && budget >= upgradeCost && request.turn < 28) {
             actions.add(GameAction.upgrade());
             budget -= upgradeCost;
         }
 
-        // --- 3. АТАКА (Приоритет №3 - Месть или Fatigue) ---
-        Integer targetId = null;
-
-        // Сначала ищем обидчика среди живых
-        targetId = threats.values().stream()
+        // 3. ВЫБОР ЦЕЛИ (Месть обидчику)
+        Integer targetId = threats.values().stream()
                 .filter(t -> t.isAggressor)
                 .max(Comparator.comparingInt(t -> t.totalDamageReceived))
                 .map(t -> t.playerId)
-                .filter(id -> isAlive(id, request.enemyTowers))
+                .filter(id -> isAlive(id, request.enemyTowers)) // Используем наш метод
                 .orElse(null);
 
-        // Если обидчиков нет, но мы уже богатые или пора воевать (Fatigue)
+        // Если Fatigue (25+) или мы уже вкачались (level 4+) - начинаем бить живых сами
         if (targetId == null && (request.turn >= 25 || level >= 4)) {
             targetId = request.enemyTowers.stream()
                     .filter(e -> e.hp > 0)
@@ -131,12 +126,18 @@ public class AIbotController {
                     .map(e -> e.playerId).orElse(null);
         }
 
-        // Стреляем на все оставшиеся деньги
+        // 4. АТАКА
         if (targetId != null && budget > 0) {
             actions.add(GameAction.attack(targetId, budget));
         }
 
         return actions;
+    }
+
+    private boolean isAlive(int id, List<Tower> towers) {
+        if (towers == null) return false;
+        return towers.stream()
+                .anyMatch(t -> t.playerId == id && t.hp > 0);
     }
 }
 
@@ -224,5 +225,7 @@ class GameAction {
         a.type = "upgrade";
         return a;
     }
+
+
 }
 
